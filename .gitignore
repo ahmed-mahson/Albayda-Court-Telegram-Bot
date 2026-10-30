@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+venv/
+.venv/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Case data
+assets/official-templates/sercase.csv
+assets/official-templates/sercase.rpt
+
+# Logs
+logs/
+*.log
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,7 @@
+pytelegrambotapi
+python-dotenv
+reportlab>=5.0
+uharfbuzz
+python-bidi
+pypdf
+hijridate
