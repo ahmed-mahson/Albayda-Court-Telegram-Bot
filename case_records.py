@@ -119,6 +119,27 @@ def display_judge_name(value):
     return name if name.startswith('⚖️') else f'⚖️{name}'
 
 
+def _display_case_number(value):
+    text = _cell_text(value)
+    if not text or text == '-':
+        return text or '-'
+    parts = [part.strip() for part in text.split('/')]
+    if len(parts) == 2 and parts[0] and parts[1]:
+        return f'{parts[1]}/{parts[0]}'
+    return text
+
+
+def _display_date(value):
+    text = _cell_text(value)
+    if not text or text == '-':
+        return text or '-'
+    normalized = _normalized_date(text)
+    if normalized is None:
+        return text
+    gregorian_date = datetime.strptime(normalized, '%Y-%m-%d').date()
+    return f'{gregorian_date.day:02}/{gregorian_date.month:02}/{gregorian_date.year:04}'
+
+
 def _parse_case_records(content):
     try:
         try:
@@ -345,7 +366,7 @@ def _register_arabic_font():
         pdfmetrics.registerFont(TTFont(FONT_NAME, str(path)))
     if not pdfmetrics.getFont(FONT_NAME).shapable:
         raise CaseRecordsError(
-            'تعذر تهيئة تشكيل الخط العربي. ثبّت اعتماديات الخط من requirements.txt.'
+            'تعذر تهيئة تشكيل الخط العربي. ثبّت اعتماديات ال��ط من requirements.txt.'
         )
 
 
@@ -625,7 +646,11 @@ def _session_row_fragments(record):
     lines_per_fragment = max(1, int((body_height - padding) / leading))
     wrapped = {
         name: _wrap_pdf_text(
-            _cell_text(record.get(field)) or '-',
+            (
+                _display_case_number(record.get(field))
+                if name == 'case_number'
+                else _cell_text(record.get(field)) or '-'
+            ),
             right - left - 6,
             font_size,
         )
@@ -1049,7 +1074,7 @@ def _create_sessions_pdf(records, sitting_date):
             112.1 * page_scale_x,
             header_baseline,
             25 * page_scale_x,
-            SESSIONS_HEADER_FONT_SIZE,
+            max_size=SESSIONS_HEADER_FONT_SIZE,
             reverse_numeric_runs=True,
         )
         document.setFillColorRGB(1, 1, 1)
@@ -1188,14 +1213,14 @@ def generate_case_pdf(record):
         f'تفاصيل القضية {case_number}',
         [
             ('القاضي المختص:', record.get('برئاسة القاضي', '-')),
-            ('رقم القضية:', case_number),
-            ('تاريخ الورود:', record.get('تاريخ ورودها', '-')),
+            ('رقم القضية:', _display_case_number(case_number)),
+            ('تاريخ الورود:', _display_date(record.get('تاريخ ورودها', '-'))),
             ('موضوع القضية:', record.get('موضوعها', '-')),
             ('نوع القضية:', record.get('نوع القضية', '-')),
             ('المدعي:', record.get('المدعي', '-')),
             ('المدعى عليه:', record.get('المدعى عليه', '-')),
             ('آخر قرار للقضية:', record.get('حالة القضية', '-')),
-            ('تاريخ الجلسة القادمة:', record.get('الجلسة القادمة', '-')),
+            ('تاريخ الجلسة القادمة:', _display_date(record.get('الجلسة القادمة', '-'))),
         ],
         CASE_INFO_TEMPLATE,
         template_layout='case_info',
