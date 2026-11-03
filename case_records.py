@@ -375,6 +375,11 @@ def _pdf_text(value, reverse_numeric_runs=False):
     return text
 
 
+def _shape_pdf_text(value, font_size):
+    text = _render_pdf_text(value)
+    return shapeStr(text, _pdf_font_for_text(text), font_size)
+
+
 def _render_pdf_text(value, reverse_numeric_runs=False, keep_latin_digits=False):
     text = _cell_text(value) or '-'
     if not keep_latin_digits:
@@ -585,5 +590,735 @@ def _draw_case_info_fields(document, fields, width, height):
     max_width = 357 * scale_x
     field_lines = []
     
-    # قائمة الحقول التي يُراد الحفاظ على أرقامها بالصيغة الأصلية (تقرير معلومات القضية)
-    LATIN_DIGIT_FIELDS
+    LATIN_DIGIT_FIELDS = {'رقم القضية:', 'تاريخ الورود:', 'تاريخ الجلسة القادمة:'}
+
+    for label, baseline, font_size in CASE_INFO_ROW_LAYOUT:
+        keep_digits = label in LATIN_DIGIT_FIELDS
+        lines = _wrap_pdf_text(
+            values.get(label, '-') or '-',
+            max_width,
+            font_size,
+            keep_latin_digits=keep_digits,
+        )
+        field_lines.append((
+            baseline * scale_y,
+            font_size,
+            [
+                lines[offset:offset + 2]
+                for offset in range(0, len(lines), 2)
+            ] or [['-']],
+            keep_digits,
+        ))
+
+    page_count = max(len(chunks) for _, _, chunks, _ in field_lines)
+    for page_index in range(page_count):
+        if page_index:
+            document.showPage()
+        for baseline, font_size, chunks, keep_digits in field_lines:
+            if page_index >= len(chunks):
+                continue
+            lines = chunks[page_index]
+            leading = font_size
+            first_baseline = baseline + (len(lines) - 1) * leading / 2
+            document.setFont(FONT_NAME, font_size)
+            for line_index, line in enumerate(lines):
+                _draw_pdf_text(
+                    document,
+                    right,
+                    first_baseline - line_index * leading,
+                    line,
+                    font_size,
+                    alignment='right',
+                    keep_latin_digits=keep_digits,
+                )
+
+
+def _session_row_fragments(record):
+    font_size = SESSIONS_BODY_FONT_SIZE
+    leading = font_size * 1.15
+    padding = 3.5
+    body_height = SESSIONS_TABLE_TOP - SESSIONS_TABLE_BOTTOM
+    lines_per_fragment = max(1, int((body_height - padding) / leading))
+    wrapped = {
+        name: _wrap_pdf_text(
+            (
+                _display_case_number(record.get(field))
+                if name == 'case_number'
+                else _cell_text(record.get(field)) or '-'
+            ),
+            right - left - 6,
+            font_size,
+            keep_latin_digits=(name == 'case_number'),
+        )
+        for name, field, left, right in SESSIONS_TABLE_COLUMNS
+    }
+    max_line_count = max(
+        (len(lines) for lines in wrapped.values()),
+        default=1,
+    )
+    fragment_count = max(
+        1,
+        (max_line_count + lines_per_fragment - 1) // lines_per_fragment,
+    )
+    fragments = []
+    for fragment_index in range(fragment_count):
+        start = fragment_index * lines_per_fragment
+        end = start + lines_per_fragment
+        fields = {
+            name: lines[start:end]
+            for name, lines in wrapped.items()
+        }
+        line_count = max((len(lines) for lines in fields.values()), default=1)
+        height = max(
+            SESSIONS_TABLE_ROW_HEIGHT,
+            line_count * leading + padding,
+        )
+        fragments.append({
+            'fields': fields,
+            'height': height,
+            'first': fragment_index == 0,
+        })
+    return fragments
+
+
+def _hijri_date(gregorian_date):
+    try:
+        hijri_date = Gregorian(
+            gregorian_date.year,
+            gregorian_date.month,
+            gregorian_date.day,
+        ).to_hijri()
+    except (OverflowError, ValueError) as exc:
+        raise CaseRecordsError('تعذر تحويل التاريخ الميلادي إلى هجري.') from exc
+    return f'{hijri_date.day:02}/{hijri_date.month:02}/{hijri_date.year}'
+
+
+def _gregorian_day_month(gregorian_date):
+    return f'{gregorian_date.day:02}/{gregorian_date.month:02}'
+
+
+def _hijri_day_month(gregorian_date):
+    return '/'.join(_hijri_date(gregorian_date).split('/')[:2])
+
+
+def _gregorian_full_date(gregorian_date):
+    return (
+        f'{gregorian_date.day:02}/'
+        f'{gregorian_date.month:02}/'
+        f'{gregorian_date.year:04}'
+    )
+
+
+def _hijri_full_date(gregorian_date):
+    hijri_day, hijri_month, hijri_year = _hijri_date(gregorian_date).split('/')
+    return f'{hijri_day}/{hijri_month}/{hijri_year}'
+
+
+def _sessions_header_text(sitting_date):
+    normalized_date = _normalized_date(sitting_date)
+    if normalized_date is None:
+        raise CaseRecordsError('تاريخ الجلسة غير صالح لإنشاء القائمة.')
+    gregorian_date = datetime.strptime(normalized_date, '%Y-%m-%d').date()
+    weekday = ARABIC_WEEKDAYS[gregorian_date.weekday()]
+    gregorian_text = (
+        f'{gregorian_date.day:02}/'
+        f'{gregorian_date.month:02}/'
+        f'{gregorian_date.year:04}'
+    )
+    return (
+        f'قائمة الجلسات ليوم {weekday} بتاريخ: {gregorian_text}م '
+        f'الموافق {_hijri_date(gregorian_date)}هـ'
+    )
+
+
+def _merge_template_overlay(title, template, overlay_stream, repeat_template_page=False):
+    try:
+        overlay = PdfReader(overlay_stream)
+        writer = PdfWriter()
+        if repeat_template_page:
+            base_writer = PdfWriter()
+            base_writer.add_page(template.pages[0])
+            base_stream = BytesIO()
+            base_writer.write(base_stream)
+            base_pdf = base_stream.getvalue()
+            for overlay_page in overlay.pages:
+                repeated_template = PdfReader(BytesIO(base_pdf))
+                writer.add_page(repeated_template.pages[0])
+                writer.pages[-1].merge_page(overlay_page)
+        else:
+            for index, template_page in enumerate(template.pages):
+                writer.add_page(template_page)
+                if index == 0 and overlay.pages:
+                    writer.pages[-1].merge_page(overlay.pages[0])
+        writer.add_metadata({'/Title': title})
+        result = BytesIO()
+        writer.write(result)
+        result.seek(0)
+        return result
+    except (OSError, PdfReadError, ValueError) as exc:
+        logging.warning('Could not apply PDF template fields (%s)', type(exc).__name__)
+        raise CaseRecordsError('تعذر تجهيز التقرير على النموذج الرسمي.') from exc
+
+
+def _create_pdf(title, fields, template_path, template_layout=None):
+    _register_arabic_font()
+    template_path = Path(template_path)
+    if not template_path.is_file():
+        raise CaseRecordsError(
+            f'تعذر العثور على النموذج الرسمي: {template_path.name}'
+        )
+
+    try:
+        template = PdfReader(str(template_path))
+        if not template.pages:
+            raise CaseRecordsError(
+                f'النموذج الرسمي لا يحتوي على صفحات: {template_path.name}'
+            )
+
+        page = template.pages[0]
+        width = float(page.mediabox.width)
+        height = float(page.mediabox.height)
+    except CaseRecordsError:
+        raise
+    except (OSError, PdfReadError, ValueError) as exc:
+        logging.warning(
+            'Official PDF template could not be read (%s)',
+            type(exc).__name__,
+        )
+        raise CaseRecordsError('تعذر قراءة النموذج الرسمي لملف PDF.') from exc
+
+    output = BytesIO()
+    document = canvas.Canvas(output, pagesize=(width, height))
+    document.setTitle(title)
+    if template_layout == 'case_info':
+        _draw_case_info_fields(document, fields, width, height)
+    elif template_layout == 'attendance_ad':
+        session_date = datetime.strptime(fields['session_date'], '%Y-%m-%d').date()
+        preparation_date = datetime.now(COURT_TIMEZONE).date()
+        scale_x = width / 595.32
+        scale_y = height / 841.92
+
+        _cover_template_rectangle(
+            document,
+            249 * scale_x,
+            516 * scale_y,
+            45 * scale_x,
+            31 * scale_y,
+        )
+        _cover_template_rectangle(
+            document,
+            46 * scale_x,
+            516 * scale_y,
+            51 * scale_x,
+            31 * scale_y,
+        )
+        _cover_template_rectangle(
+            document,
+            298 * scale_x,
+            444 * scale_y,
+            114 * scale_x,
+            31 * scale_y,
+        )
+        _cover_template_rectangle(
+            document,
+            123 * scale_x,
+            444 * scale_y,
+            55 * scale_x,
+            31 * scale_y,
+        )
+        _draw_single_line_fit(
+            document,
+            fields['plaintiff'],
+            380 * scale_x,
+            648 * scale_y,
+            205 * scale_x,
+            max_size=24,
+        )
+        _draw_single_line_fit(
+            document,
+            fields['defendant'],
+            380 * scale_x,
+            603 * scale_y,
+            205 * scale_x,
+            max_size=24,
+        )
+        _draw_centered_fit(
+            document,
+            ARABIC_WEEKDAYS[session_date.weekday()],
+            450 * scale_x,
+            521.47 * scale_y,
+            90 * scale_x,
+            max_size=24,
+        )
+        _draw_centered_fit(
+            document,
+            _gregorian_full_date(session_date),
+            310 * scale_x,
+            521.47 * scale_y,
+            115 * scale_x,
+            max_size=24,
+        )
+        _draw_centered_fit(
+            document,
+            _hijri_full_date(session_date),
+            120 * scale_x,
+            521.47 * scale_y,
+            120 * scale_x,
+            max_size=24,
+        )
+        _draw_centered_fit(
+            document,
+            _gregorian_full_date(preparation_date),
+            354 * scale_x,
+            450.31 * scale_y,
+            115 * scale_x,
+            max_size=24.96,
+        )
+        _draw_centered_fit(
+            document,
+            _hijri_full_date(preparation_date),
+            190 * scale_x,
+            450.31 * scale_y,
+            120 * scale_x,
+            max_size=24.96,
+        )
+        _draw_single_line_fit(
+            document,
+            fields['judge'],
+            211.25 * scale_x,
+            382.49 * scale_y,
+            150 * scale_x,
+            max_size=18,
+            alignment='right',
+        )
+    else:
+        document.setFont(FONT_NAME, 12)
+        _draw_pdf_text(
+            document,
+            width / 2,
+            height - 40,
+            title,
+            12,
+            alignment='center',
+        )
+        document.setFont(FONT_NAME, 10)
+        y = height - 75
+        for label, value in fields:
+            _draw_pdf_text(
+                document,
+                width - 36,
+                y,
+                f'{label} {value}'[:160],
+                10,
+                alignment='right',
+            )
+            y -= 22
+            if y < 36:
+                document.showPage()
+                document.setFont(FONT_NAME, 10)
+                y = height - 36
+    document.save()
+    output.seek(0)
+
+    if template_layout == 'case_info':
+        return _merge_template_overlay(
+            title,
+            template,
+            output,
+            repeat_template_page=True,
+        )
+    if template_layout == 'attendance_ad':
+        return _merge_template_overlay(title, template, output)
+
+    try:
+        overlay = PdfReader(output)
+        writer = PdfWriter()
+        for template_page in template.pages:
+            writer.add_page(template_page)
+        for report_page in overlay.pages:
+            writer.add_page(report_page)
+        writer.add_metadata({'/Title': title})
+        result = BytesIO()
+        writer.write(result)
+        result.seek(0)
+        return result
+    except (OSError, PdfReadError, ValueError) as exc:
+        logging.warning('Could not apply PDF report fields (%s)', type(exc).__name__)
+        raise CaseRecordsError('تعذر تجهيز التقرير على النموذج الرسمي.') from exc
+
+
+def _create_sessions_pdf(records, sitting_date):
+    _register_arabic_font()
+    if not SESSIONS_TEMPLATE.is_file():
+        raise CaseRecordsError(
+            f'تعذر العثور على النموذج الرسمي: {SESSIONS_TEMPLATE.name}'
+        )
+    try:
+        template = PdfReader(str(SESSIONS_TEMPLATE))
+        if not template.pages:
+            raise CaseRecordsError(
+                f'النموذج الرسمي لا يحتوي على صفحات: {SESSIONS_TEMPLATE.name}'
+            )
+        page = template.pages[0]
+        width = float(page.mediabox.width)
+        height = float(page.mediabox.height)
+    except CaseRecordsError:
+        raise
+    except (OSError, PdfReadError, ValueError) as exc:
+        logging.warning(
+            'Official sessions PDF template could not be read (%s)',
+            type(exc).__name__,
+        )
+        raise CaseRecordsError('تعذر قراءة نموذج قائمة الجلسات الرسمي.') from exc
+
+    normalized_date = _normalized_date(sitting_date)
+    if normalized_date is None:
+        raise CaseRecordsError('تاريخ الجلسة غير صالح لإنشاء القائمة.')
+    display_date = normalized_date.replace('-', '/')
+    output = BytesIO()
+    document = canvas.Canvas(output, pagesize=(width, height))
+    title = f'قائمة الجلسات ليوم {display_date}'
+    document.setTitle(title)
+    page_scale_x = width / 595.32
+    page_scale_y = height / 841.92
+    records_by_judge = {}
+    for record in records:
+        judge = _cell_text(record.get('برئاسة القاضي')) or 'غير محدد'
+        records_by_judge.setdefault(judge, []).append(record)
+
+    report_pages = []
+    page_capacity = SESSIONS_TABLE_TOP - SESSIONS_TABLE_BOTTOM
+    for judge in sorted(records_by_judge):
+        current_page = []
+        current_page_height = 0
+        row_fragments = [
+            fragment
+            for record in records_by_judge[judge]
+            for fragment in _session_row_fragments(record)
+        ]
+        for fragment in row_fragments:
+            if (
+                current_page
+                and current_page_height + fragment['height'] > page_capacity
+            ):
+                report_pages.append((judge, current_page))
+                current_page = []
+                current_page_height = 0
+            current_page.append(fragment)
+            current_page_height += fragment['height']
+        if current_page:
+            report_pages.append((judge, current_page))
+
+    for page_index, (judge_title, page_rows) in enumerate(report_pages):
+        if page_index:
+            document.showPage()
+        _draw_single_line_fit(
+            document,
+            judge_title,
+            391.5 * page_scale_x,
+            689.74 * page_scale_y,
+            150 * page_scale_x,
+            max_size=SESSIONS_HEADER_FONT_SIZE,
+            alignment='right',
+        )
+        header_baseline = 664.18 * page_scale_y
+        gregorian_date = datetime.strptime(normalized_date, '%Y-%m-%d').date()
+        weekday = ARABIC_WEEKDAYS[gregorian_date.weekday()]
+        hijri_day, hijri_month = _hijri_day_month(gregorian_date).split('/')
+        _draw_centered_fit(
+            document,
+            weekday,
+            399 * page_scale_x,
+            header_baseline,
+            82 * page_scale_x,
+            max_size=SESSIONS_HEADER_FONT_SIZE,
+        )
+        _draw_centered_fit(
+            document,
+            f'{gregorian_date.day:02}',
+            281.2 * page_scale_x,
+            header_baseline,
+            25 * page_scale_x,
+            max_size=SESSIONS_HEADER_FONT_SIZE,
+        )
+        _draw_centered_fit(
+            document,
+            f'{gregorian_date.month:02}',
+            254.7 * page_scale_x,
+            header_baseline,
+            25 * page_scale_x,
+            max_size=SESSIONS_HEADER_FONT_SIZE,
+        )
+        _draw_centered_fit(
+            document,
+            hijri_day,
+            138.6 * page_scale_x,
+            header_baseline,
+            25 * page_scale_x,
+            max_size=SESSIONS_HEADER_FONT_SIZE,
+        )
+        _draw_centered_fit(
+            document,
+            hijri_month,
+            112.1 * page_scale_x,
+            header_baseline,
+            25 * page_scale_x,
+            max_size=SESSIONS_HEADER_FONT_SIZE,
+        )
+        document.setFillColorRGB(1, 1, 1)
+        document.rect(
+            SESSIONS_TABLE_LEFT,
+            SESSIONS_TABLE_BOTTOM,
+            SESSIONS_TABLE_RIGHT - SESSIONS_TABLE_LEFT,
+            SESSIONS_TABLE_TOP - SESSIONS_TABLE_BOTTOM,
+            fill=1,
+            stroke=0,
+        )
+        document.setFillColorRGB(0, 0, 0)
+        row_boundaries = [SESSIONS_TABLE_TOP]
+        cursor_y = SESSIONS_TABLE_TOP
+        serial_number = 0
+        for row_index, fragment in enumerate(page_rows):
+            row_top = cursor_y
+            cursor_y -= fragment['height']
+            row_boundaries.append(cursor_y)
+            if row_index % 2:
+                document.setFillColorRGB(0.96, 0.96, 0.96)
+                document.rect(
+                    SESSIONS_TABLE_LEFT,
+                    cursor_y,
+                    SESSIONS_TABLE_RIGHT - SESSIONS_TABLE_LEFT,
+                    row_top - cursor_y,
+                    fill=1,
+                    stroke=0,
+                )
+                document.setFillColorRGB(0, 0, 0)
+
+            if fragment['first']:
+                serial_number += 1
+                document.setFont(FONT_NAME, 8.5)
+                _draw_pdf_text(
+                    document,
+                    SESSIONS_TABLE_SEQUENCE_CENTER,
+                    (row_top + cursor_y) / 2 - 3,
+                    str(serial_number),
+                    8.5,
+                    alignment='center',
+                )
+
+            for name, _, left, right in SESSIONS_TABLE_COLUMNS:
+                lines = fragment['fields'][name]
+                font_size = SESSIONS_BODY_FONT_SIZE
+                leading = font_size * 1.15
+                first_baseline = (
+                    (row_top + cursor_y) / 2
+                    + (len(lines) - 1) * leading / 2
+                )
+                document.setFont(FONT_NAME, font_size)
+                is_case_num = (name == 'case_number')
+                for line_index, line in enumerate(lines):
+                    _draw_pdf_text(
+                        document,
+                        (left + right) / 2,
+                        first_baseline - line_index * leading,
+                        line,
+                        font_size,
+                        alignment='center',
+                        keep_latin_digits=is_case_num,
+                    )
+
+        while (
+            cursor_y - SESSIONS_TABLE_ROW_HEIGHT
+            >= SESSIONS_TABLE_BOTTOM
+        ):
+            row_top = cursor_y
+            cursor_y -= SESSIONS_TABLE_ROW_HEIGHT
+            row_boundaries.append(cursor_y)
+            if (len(row_boundaries) - 1) % 2:
+                document.setFillColorRGB(0.96, 0.96, 0.96)
+                document.rect(
+                    SESSIONS_TABLE_LEFT,
+                    cursor_y,
+                    SESSIONS_TABLE_RIGHT - SESSIONS_TABLE_LEFT,
+                    row_top - cursor_y,
+                    fill=1,
+                    stroke=0,
+                )
+                document.setFillColorRGB(0, 0, 0)
+            serial_number += 1
+            document.setFont(FONT_NAME, 8.5)
+            _draw_pdf_text(
+                document,
+                SESSIONS_TABLE_SEQUENCE_CENTER,
+                (row_top + cursor_y) / 2 - 3,
+                str(serial_number),
+                8.5,
+                alignment='center',
+            )
+        if cursor_y > SESSIONS_TABLE_BOTTOM:
+            row_boundaries.append(SESSIONS_TABLE_BOTTOM)
+
+        document.setStrokeColorRGB(0, 0, 0)
+        document.setLineWidth(0.5)
+        for x in SESSIONS_TABLE_COLUMN_EDGES:
+            document.line(
+                x,
+                SESSIONS_TABLE_BOTTOM,
+                x,
+                SESSIONS_TABLE_TOP,
+            )
+        for y in row_boundaries:
+            document.line(
+                SESSIONS_TABLE_LEFT,
+                y,
+                SESSIONS_TABLE_RIGHT,
+                y,
+            )
+        document.line(
+            SESSIONS_TABLE_LEFT,
+            SESSIONS_TABLE_BOTTOM,
+            SESSIONS_TABLE_LEFT,
+            SESSIONS_TABLE_TOP,
+        )
+        document.line(
+            SESSIONS_TABLE_RIGHT,
+            SESSIONS_TABLE_BOTTOM,
+            SESSIONS_TABLE_RIGHT,
+            SESSIONS_TABLE_TOP,
+        )
+        document.setFillColorRGB(0, 0, 0)
+    document.save()
+    output.seek(0)
+    return _merge_template_overlay(
+        title,
+        template,
+        output,
+        repeat_template_page=True,
+    )
+
+
+def generate_case_pdf(record):
+    case_number = record.get('رقم القضية', '')
+    return _create_pdf(
+        f'تفاصيل القضية {case_number}',
+        [
+            ('القاضي المختص:', record.get('برئاسة القاضي', '-')),
+            ('رقم القضية:', _display_case_number(case_number)),
+            ('تاريخ الورود:', _display_date(record.get('تاريخ ورودها', '-'))),
+            ('موضوع القضية:', record.get('موضوعها', '-')),
+            ('نوع القضية:', record.get('نوع القضية', '-')),
+            ('المدعي:', record.get('المدعي', '-')),
+            ('المدعى عليه:', record.get('المدعى عليه', '-')),
+            ('آخر قرار للقضية:', record.get('حالة القضية', '-')),
+            ('تاريخ الجلسة القادمة:', _display_date(record.get('الجلسة القادمة', '-'))),
+        ],
+        CASE_INFO_TEMPLATE,
+        template_layout='case_info',
+    )
+
+
+def _search_report_rows(record):
+    return [
+        ('الطاعن / الملتمس', record.get('المدعي', '-') or '-'),
+        ('المطعون / الملتمس ضده', record.get('المدعى عليه', '-') or '-'),
+        ('نوع القضية', record.get('نوع القضية', '-') or '-'),
+        ('تاريخ الاستلام', _display_date(record.get('تاريخ ورودها', '-') or '-')),
+        ('الرقم الخاص بخدمة الرسائل القصيرة', _display_case_number(record.get('رقم القضية', '-') or '-')),
+        ('تاريخ الإرسال', record.get('حالة القضية', '-') or '-'),
+    ]
+
+
+def generate_search_report_pdf(title, rows):
+    if SEARCH_REPORT_TEMPLATE.is_file():
+        template = PdfReader(str(SEARCH_REPORT_TEMPLATE))
+        if template.pages:
+            width = float(template.pages[0].mediabox.width)
+            height = float(template.pages[0].mediabox.height)
+            output = BytesIO()
+            document = canvas.Canvas(output, pagesize=(width, height))
+            document.setTitle(title)
+            field_x = width - 36
+            value_x = 30
+            y = height - 80
+            for field, value in rows:
+                if y < 50:
+                    document.showPage()
+                    y = height - 80
+                document.setFont(FONT_NAME, 11)
+                _draw_pdf_text(document, field_x, y, field, 11, alignment='right')
+                _draw_pdf_text(document, value_x, y, value, 11, alignment='left')
+                y -= 22
+            document.save()
+            output.seek(0)
+            return _merge_template_overlay(title, template, output)
+
+    output = BytesIO()
+    document = canvas.Canvas(output, pagesize=(595.32, 841.92))
+    document.setTitle(title)
+    width = 595.32
+    height = 841.92
+    field_x = width - 36
+    value_x = 30
+    y = height - 70
+    for field, value in rows:
+        if y < 50:
+            document.showPage()
+            y = height - 70
+        document.setFont(FONT_NAME, 12)
+        _draw_pdf_text(document, field_x, y, field, 12, alignment='right')
+        _draw_pdf_text(document, value_x, y, value, 12, alignment='left')
+        y -= 26
+    document.save()
+    output.seek(0)
+    return output
+
+
+def generate_sessions_pdf(records, sitting_date):
+    if not records:
+        raise CaseRecordsError('لا توجد جلسات لإدراجها في النموذج الرسمي.')
+    return _create_sessions_pdf(records, sitting_date)
+
+
+def generate_attendance_ad_pdf(case_number, plaintiff, defendant, session_date, judge):
+    normalized_date = _normalized_date(session_date)
+    if normalized_date is None:
+        raise CaseRecordsError('تاريخ الجلسة غير صالح لإنشاء الإعلان.')
+    return _create_pdf(
+        f'إعلان حضور جلسة القضية {case_number}',
+        {
+            'plaintiff': plaintiff,
+            'defendant': defendant,
+            'session_date': normalized_date,
+            'judge': judge,
+        },
+        ATTENDANCE_TEMPLATE,
+        template_layout='attendance_ad',
+    )
+
+
+# دالتان إضافيتان مطلوبة من ملفات الاختبار الآلي لتفادي أخطاء الـ AttributeError
+def _shape_pdf_text(value, font_size):
+    text = _render_pdf_text(value)
+    return shapeStr(text, _pdf_font_for_text(text), font_size)
+
+
+__all__ = [
+    'CaseRecordsError',
+    'available_case_types',
+    'available_judges',
+    'case_type_matches',
+    'display_judge_name',
+    'generate_attendance_ad_pdf',
+    'generate_case_pdf',
+    'generate_search_report_pdf',
+    'generate_sessions_pdf',
+    'load_case_records',
+    'search_case_records',
+    'search_sessions_by_date',
+    '_search_report_rows',
+    '_create_pdf',
+    '_create_sessions_pdf',
+    '_sessions_header_text',
+    '_gregorian_day_month',
+    '_shape_pdf_text',
+]
