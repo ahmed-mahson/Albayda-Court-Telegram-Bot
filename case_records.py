@@ -42,6 +42,7 @@ DEFAULT_FONT_PATH = (
 CASE_INFO_TEMPLATE = Path(__file__).resolve().parent / 'معلومات القضية.pdf'
 SESSIONS_TEMPLATE = Path(__file__).resolve().parent / 'قائمة الجلسات.pdf'
 ATTENDANCE_TEMPLATE = Path(__file__).resolve().parent / 'نموذج الاعلان.pdf'
+SEARCH_REPORT_TEMPLATE = Path(__file__).resolve().parent / 'الكليشة.pdf'
 CASE_TYPE_DISPLAY_NAMES = {
     'مدنية': 'مدنيــــة',
     'شخصية': 'شخصيـــة',
@@ -187,7 +188,7 @@ def _parse_case_records(content):
                 records.append(record)
                 if len(records) > MAX_CSV_ROWS:
                     raise CaseRecordsError(
-                        'ملف سجل القضايا يتجاوز الحد المسموح للصفوف.'
+                        'ملف سجل القضايا يتجاوز الحد المسم��ح للصفوف.'
                     )
         if not records:
             raise CaseRecordsError('ملف سجل القضايا لا يحتوي على قضايا.')
@@ -366,7 +367,7 @@ def _register_arabic_font():
         pdfmetrics.registerFont(TTFont(FONT_NAME, str(path)))
     if not pdfmetrics.getFont(FONT_NAME).shapable:
         raise CaseRecordsError(
-            'تعذر تهيئة تشكيل الخط العربي. ثبّت اعتماديات ال��ط من requirements.txt.'
+            'تعذر تهيئة تشكيل الخط العربي. ثبّت اعتماديات الخط من requirements.txt.'
         )
 
 
@@ -388,7 +389,6 @@ def _pdf_text(value, reverse_numeric_runs=False):
         return text
 
     number_token = r'[0-9٠-٩]+(?:[/:.-][0-9٠-٩]+)*'
-    # HarfBuzz treats Arabic-Indic digit runs as RTL; reverse them for LTR display.
     return re.sub(
         number_token,
         lambda match: match.group(0)[::-1],
@@ -721,7 +721,7 @@ def _hijri_full_date(gregorian_date):
 def _sessions_header_text(sitting_date):
     normalized_date = _normalized_date(sitting_date)
     if normalized_date is None:
-        raise CaseRecordsError('تاريخ الجلسة غير صالح لإنشاء القائمة.')
+        raise CaseRecordsError('تاريخ الجلسة غ��ر صالح لإنشاء القائمة.')
     gregorian_date = datetime.strptime(normalized_date, '%Y-%m-%d').date()
     weekday = ARABIC_WEEKDAYS[gregorian_date.weekday()]
     gregorian_text = (
@@ -1227,6 +1227,62 @@ def generate_case_pdf(record):
     )
 
 
+def _search_report_rows(record):
+    return [
+        ('الطاعن / الملتمس', record.get('المدعي', '-') or '-'),
+        ('المطعون / الملتمس ضده', record.get('المدعى عليه', '-') or '-'),
+        ('نوع القضية', record.get('نوع القضية', '-') or '-'),
+        ('تاريخ الاستلام', _display_date(record.get('تاريخ ورودها', '-') or '-')),
+        ('الرقم الخاص بخدمة الرسائل القصيرة', _display_case_number(record.get('رقم القضية', '-') or '-')),
+        ('تاريخ الإرسال', record.get('حالة القضية', '-') or '-'),
+    ]
+
+
+def generate_search_report_pdf(title, rows):
+    if SEARCH_REPORT_TEMPLATE.is_file():
+        template = PdfReader(str(SEARCH_REPORT_TEMPLATE))
+        if template.pages:
+            width = float(template.pages[0].mediabox.width)
+            height = float(template.pages[0].mediabox.height)
+            output = BytesIO()
+            document = canvas.Canvas(output, pagesize=(width, height))
+            document.setTitle(title)
+            field_x = width - 36
+            value_x = 30
+            y = height - 80
+            for field, value in rows:
+                if y < 50:
+                    document.showPage()
+                    y = height - 80
+                document.setFont(FONT_NAME, 11)
+                _draw_pdf_text(document, field_x, y, field, 11, alignment='right')
+                _draw_pdf_text(document, value_x, y, value, 11, alignment='left')
+                y -= 22
+            document.save()
+            output.seek(0)
+            return _merge_template_overlay(title, template, output)
+
+    output = BytesIO()
+    document = canvas.Canvas(output, pagesize=(595.32, 841.92))
+    document.setTitle(title)
+    width = 595.32
+    height = 841.92
+    field_x = width - 36
+    value_x = 30
+    y = height - 70
+    for field, value in rows:
+        if y < 50:
+            document.showPage()
+            y = height - 70
+        document.setFont(FONT_NAME, 12)
+        _draw_pdf_text(document, field_x, y, field, 12, alignment='right')
+        _draw_pdf_text(document, value_x, y, value, 12, alignment='left')
+        y -= 26
+    document.save()
+    output.seek(0)
+    return output
+
+
 def generate_sessions_pdf(records, sitting_date):
     if not records:
         raise CaseRecordsError('لا توجد جلسات لإدراجها في النموذج الرسمي.')
@@ -1248,3 +1304,20 @@ def generate_attendance_ad_pdf(case_number, plaintiff, defendant, session_date, 
         ATTENDANCE_TEMPLATE,
         template_layout='attendance_ad',
     )
+
+
+__all__ = [
+    'CaseRecordsError',
+    'available_case_types',
+    'available_judges',
+    'case_type_matches',
+    'display_judge_name',
+    'generate_attendance_ad_pdf',
+    'generate_case_pdf',
+    'generate_search_report_pdf',
+    'generate_sessions_pdf',
+    'load_case_records',
+    'search_case_records',
+    'search_sessions_by_date',
+    '_search_report_rows',
+]
