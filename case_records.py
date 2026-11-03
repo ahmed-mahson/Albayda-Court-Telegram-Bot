@@ -124,9 +124,6 @@ def _display_case_number(value):
     text = _cell_text(value)
     if not text or text == '-':
         return text or '-'
-    parts = [part.strip() for part in text.split('/')]
-    if len(parts) == 2 and parts[0] and parts[1]:
-        return f'{parts[1]}/{parts[0]}'
     return text
 
 
@@ -188,7 +185,7 @@ def _parse_case_records(content):
                 records.append(record)
                 if len(records) > MAX_CSV_ROWS:
                     raise CaseRecordsError(
-                        'ملف سجل القضايا يتجاوز الحد المسم��ح للصفوف.'
+                        'ملف سجل القضايا يتجاوز الحد المسموح للصفوف.'
                     )
         if not records:
             raise CaseRecordsError('ملف سجل القضايا لا يحتوي على قضايا.')
@@ -375,25 +372,7 @@ def _pdf_text(value, reverse_numeric_runs=False):
     text = _cell_text(value)
     if not text or text == '-':
         return '-'
-    if reverse_numeric_runs:
-        return re.sub(
-            r'[0-9٠-٩]+',
-            lambda match: match.group(0)[::-1],
-            text,
-        )
-    if not any(
-        '\u0600' <= ch <= '\u06FF'
-        and unicodedata.category(ch).startswith('L')
-        for ch in text
-    ):
-        return text
-
-    number_token = r'[0-9٠-٩]+(?:[/:.-][0-9٠-٩]+)*'
-    return re.sub(
-        number_token,
-        lambda match: match.group(0)[::-1],
-        text,
-    )
+    return text
 
 
 def _render_pdf_text(value, reverse_numeric_runs=False):
@@ -721,7 +700,7 @@ def _hijri_full_date(gregorian_date):
 def _sessions_header_text(sitting_date):
     normalized_date = _normalized_date(sitting_date)
     if normalized_date is None:
-        raise CaseRecordsError('تاريخ الجلسة غ��ر صالح لإنشاء القائمة.')
+        raise CaseRecordsError('تاريخ الجلسة غير صالح لإنشاء القائمة.')
     gregorian_date = datetime.strptime(normalized_date, '%Y-%m-%d').date()
     weekday = ARABIC_WEEKDAYS[gregorian_date.weekday()]
     gregorian_text = (
@@ -861,7 +840,6 @@ def _create_pdf(title, fields, template_path, template_layout=None):
             521.47 * scale_y,
             115 * scale_x,
             max_size=24,
-            reverse_numeric_runs=True,
         )
         _draw_centered_fit(
             document,
@@ -870,7 +848,6 @@ def _create_pdf(title, fields, template_path, template_layout=None):
             521.47 * scale_y,
             120 * scale_x,
             max_size=24,
-            reverse_numeric_runs=True,
         )
         _draw_centered_fit(
             document,
@@ -879,7 +856,6 @@ def _create_pdf(title, fields, template_path, template_layout=None):
             450.31 * scale_y,
             115 * scale_x,
             max_size=24.96,
-            reverse_numeric_runs=True,
         )
         _draw_centered_fit(
             document,
@@ -888,7 +864,6 @@ def _create_pdf(title, fields, template_path, template_layout=None):
             450.31 * scale_y,
             120 * scale_x,
             max_size=24.96,
-            reverse_numeric_runs=True,
         )
         _draw_single_line_fit(
             document,
@@ -1048,7 +1023,6 @@ def _create_sessions_pdf(records, sitting_date):
             header_baseline,
             25 * page_scale_x,
             max_size=SESSIONS_HEADER_FONT_SIZE,
-            reverse_numeric_runs=True,
         )
         _draw_centered_fit(
             document,
@@ -1057,7 +1031,6 @@ def _create_sessions_pdf(records, sitting_date):
             header_baseline,
             25 * page_scale_x,
             max_size=SESSIONS_HEADER_FONT_SIZE,
-            reverse_numeric_runs=True,
         )
         _draw_centered_fit(
             document,
@@ -1066,7 +1039,6 @@ def _create_sessions_pdf(records, sitting_date):
             header_baseline,
             25 * page_scale_x,
             max_size=SESSIONS_HEADER_FONT_SIZE,
-            reverse_numeric_runs=True,
         )
         _draw_centered_fit(
             document,
@@ -1075,7 +1047,6 @@ def _create_sessions_pdf(records, sitting_date):
             header_baseline,
             25 * page_scale_x,
             max_size=SESSIONS_HEADER_FONT_SIZE,
-            reverse_numeric_runs=True,
         )
         document.setFillColorRGB(1, 1, 1)
         document.rect(
