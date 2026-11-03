@@ -39,15 +39,4 @@ jobs:
 
       - name: Start bot
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          GOOGLE_DRIVE_FILE_ID: ${{ secrets.GOOGLE_DRIVE_FILE_ID }}
-        run: |
-          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
-            echo "::error::Add TELEGRAM_TOKEN to the repository Actions secrets."
-            exit 1
-          fi
-          if [ -z "$GOOGLE_DRIVE_FILE_ID" ]; then
-            echo "::error::Add GOOGLE_DRIVE_FILE_ID to the repository Actions secrets."
-            exit 1
-          fi
-          python -u bot.py
+          
